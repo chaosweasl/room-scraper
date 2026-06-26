@@ -81,8 +81,11 @@ export async function scrapeRoomspot(browser: Browser): Promise<number> {
         if (item.cleanPrice <= 500) {
           sendDiscordAlert({
             title: item.title,
-            cleanPrice: item.cleanPrice,
+            rent: item.cleanPrice,
             url: item.url,
+            source: 'roomspot',
+            listing_type: item.title.toLowerCase().includes('studio') ? 'studio' : 'room',
+            priority: 'high',
           }).catch(() => {});
         }
       }
