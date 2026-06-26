@@ -1,17 +1,29 @@
 version: '3.8'
 
 services:
-  scraper-worker:
+  # Single orchestrator that runs all scrapers sequentially
+  scraper-orchestrator:
     build: ./worker
     restart: always
     volumes:
       - ./data:/app/data
     environment:
-      # Tell the worker exactly where to put the DB inside its container
       - DATABASE_URL=file:/app/data/housing.db
-      - DISCORD_WEBHOOK_URL=your_discord_webhook_here
-    # Optional: Prevents Chromium out-of-memory crashes in Docker
+      - DISCORD_WEBHOOK_URL=${DISCORD_WEBHOOK_URL:-your_discord_webhook_here}
     ipc: host
+    command: ["npx", "ts-node", "orchestrator.ts"]
+
+  # Original Roomspot scraper (still runs independently)
+  scraper-roomspot:
+    build: ./worker
+    restart: always
+    volumes:
+      - ./data:/app/data
+    environment:
+      - DATABASE_URL=file:/app/data/housing.db
+      - DISCORD_WEBHOOK_URL=${DISCORD_WEBHOOK_URL:-your_discord_webhook_here}
+    ipc: host
+    command: ["npx", "ts-node", "index.ts"]
 
   frontend-dashboard:
     build: ./dashboard
@@ -21,7 +33,7 @@ services:
     volumes:
       - ./data:/app/data
     environment:
-      # Tell the frontend exactly where to read the DB
       - DATABASE_URL=file:/app/data/housing.db
     depends_on:
-      - scraper-worker
+      - scraper-orchestrator
+      - scraper-roomspot

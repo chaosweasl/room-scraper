@@ -7,8 +7,8 @@ WORKDIR /app
 COPY package*.json ./
 RUN npm install
 
-# Copy the rest of the TS code
+# Copy the rest of the TS code (including shared/ and all scraper files)
 COPY . .
 
-# Run the typescript file directly
-CMD ["npx", "ts-node", "index.ts"]
+# Default command — overridden by docker-compose per service
+CMD ["npx", "ts-node", "orchestrator.ts"]
