@@ -4,7 +4,6 @@ import { ensureSchema } from './shared/db';
 import { scrapeMarktplaats } from './scraper-marktplaats';
 import { scrapePararius } from './scraper-pararius';
 import { scrapeRoomspot } from './scraper-roomspot';
-import { scrapeKamernet } from './scraper-kamernet';
 
 chromium.use(stealthPlugin());
 
@@ -32,7 +31,6 @@ async function runAllScrapers() {
     totalNew += await scrapeMarktplaats(browser);
     totalNew += await scrapePararius(browser);
     totalNew += await scrapeRoomspot(browser);
-    totalNew += await scrapeKamernet(browser);
   } catch (error) {
     console.error('❌ Orchestrator error:', error);
   } finally {
