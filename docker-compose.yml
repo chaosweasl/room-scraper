@@ -10,6 +10,8 @@ services:
     environment:
       - DATABASE_URL=file:/app/data/housing.db
       - DISCORD_WEBHOOK_URL=${DISCORD_WEBHOOK_URL:-your_discord_webhook_here}
+      - KAMERNET_EMAIL=${KAMERNET_EMAIL:-your_kamernet_email}
+      - KAMERNET_PASSWORD=${KAMERNET_PASSWORD:-your_kamernet_password}
     ipc: host
     command: ["npx", "ts-node", "orchestrator.ts"]
 

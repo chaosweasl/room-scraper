@@ -168,6 +168,7 @@ export async function scrapeXior(browser: Browser): Promise<number> {
     }
   }
 
-  console.log(`🏘️ Xior done — ${totalInserted} new listings inserted\n`);
+  console.log(`🏘️ Xior done — ${totalInserted} new listings inserted
+`);
   return totalInserted;
 }

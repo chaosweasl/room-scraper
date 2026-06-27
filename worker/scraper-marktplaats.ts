@@ -1,4 +1,4 @@
-import { Browser, Page } from 'playwright';
+import { Browser } from 'playwright';
 import { ensureSchema, insertListing } from './shared/db';
 import { sendDiscordAlert } from './shared/discord';
 
@@ -66,11 +66,12 @@ export async function scrapeMarktplaats(browser: Browser): Promise<number> {
         const relUrl = linkEl?.getAttribute('href') || '';
         const url = relUrl ? 'https://www.marktplaats.nl' + relUrl : '';
 
-        // Title and description area
+        // Title and description area — split by newlines BEFORE collapsing whitespace
         const descArea = el.querySelector('[class*="title-description"]');
-        const fullText = descArea?.textContent?.trim().replace(/\s+/g, ' ') || '';
-        const lines = fullText.split('\n').map(l => l.trim()).filter(Boolean);
-        const title = lines[0] || 'Unknown';
+        const rawText = descArea?.textContent?.trim() || '';
+        // Split on newlines first, then clean each line
+        const rawLines = rawText.split('\n').map(l => l.trim().replace(/\s+/g, ' ')).filter(Boolean);
+        const title = rawLines[0] || 'Unknown';
 
         // Price area
         const priceArea = el.querySelector('[class*="price-date"]');
@@ -82,7 +83,7 @@ export async function scrapeMarktplaats(browser: Browser): Promise<number> {
         const location = locationMatch ? locationMatch[1] : 'Enschede';
 
         // Description snippet (everything after title)
-        const description = lines.slice(1).join(' ').substring(0, 500);
+        const description = rawLines.slice(1).join(' ').substring(0, 500);
 
         return { title, priceText: priceLine, url, location, description };
       });
@@ -92,12 +93,20 @@ export async function scrapeMarktplaats(browser: Browser): Promise<number> {
 
     for (const item of listings) {
       if (!item.url) continue;
+      // Skip huurwoningen.nl syndicated listings (they redirect to a paywall)
+      if (item.url.includes('?c=')) {
+        console.log(`  ⏭️ Skipping huurwoningen redirect: ${item.title.substring(0, 60)}`);
+        continue;
+      }
 
       const rent = parsePrice(item.priceText);
       const listingType = detectListingType(item.title, item.description);
 
+      // Extract real Marktplaats ID from URL: /a123456789 or /m123456789
+      const idMatch = item.url.match(/\/([am]\d{8,})/);
+      const listingId = idMatch ? idMatch[1] : `r-${Math.random().toString(36).substring(2, 10)}`;
       const result = await insertListing({
-        id: `mp-${item.url.split('/a')[1]?.split('-')[0] || Math.random().toString(36)}`,
+        id: `mp-${listingId}`,
         title: item.title,
         rent,
         url: item.url,
@@ -144,6 +153,7 @@ export async function scrapeMarktplaats(browser: Browser): Promise<number> {
     await context.close();
   }
 
-  console.log(`🏠 Marktplaats done — ${totalInserted} new listings inserted\n`);
+  console.log(`🏠 Marktplaats done — ${totalInserted} new listings inserted
+`);
   return totalInserted;
 }

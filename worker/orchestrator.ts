@@ -5,12 +5,13 @@ import { scrapeMarktplaats } from './scraper-marktplaats';
 import { scrapePararius } from './scraper-pararius';
 import { scrapeXior } from './scraper-xior';
 import { scrapeRoomspot } from './scraper-roomspot';
+import { scrapeKamernet } from './scraper-kamernet';
 
 chromium.use(stealthPlugin());
 
 async function runAllScrapers() {
   console.log('🚀 Starting orchestrated scraping cycle...');
-  console.log('=' .repeat(50));
+  console.log('='.repeat(50));
 
   await ensureSchema();
 
@@ -33,15 +34,16 @@ async function runAllScrapers() {
     totalNew += await scrapeMarktplaats(browser);
     totalNew += await scrapePararius(browser);
     totalNew += await scrapeXior(browser);
+    totalNew += await scrapeKamernet(browser);
   } catch (error) {
     console.error('❌ Orchestrator error:', error);
   } finally {
     await browser.close();
   }
 
-  console.log('=' .repeat(50));
+  console.log('='.repeat(50));
   console.log(`✅ Cycle complete — ${totalNew} total new listings found`);
-  console.log('=' .repeat(50));
+  console.log('='.repeat(50));
 }
 
 // ---------------------------------------------------------

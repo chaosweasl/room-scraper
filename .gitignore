@@ -40,17 +40,21 @@ yarn-error.log*
 *.tsbuildinfo
 next-env.d.ts
 
-# Environment Variables
-.env
-.env.local
-.env.development
-
 # Scraper Data & Screenshots
 data/
 *.db
 *.db-journal
 error-screenshot.png
 
+# Email Drafts (generated output)
+email-drafts/
+
+# Python
+__pycache__/
+*.pyc
+
+# Kamernet session (sensitive — contains login cookies)
+kamernet-session.json
+
 # OS Files
-.DS_Store
 Thumbs.db

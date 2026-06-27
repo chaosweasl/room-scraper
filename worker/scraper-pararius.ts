@@ -154,6 +154,7 @@ export async function scrapePararius(browser: Browser): Promise<number> {
     await context.close();
   }
 
-  console.log(`🏢 Pararius done — ${totalInserted} new listings inserted\n`);
+  console.log(`🏢 Pararius done — ${totalInserted} new listings inserted
+`);
   return totalInserted;
 }

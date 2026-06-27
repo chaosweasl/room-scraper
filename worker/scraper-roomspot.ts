@@ -75,18 +75,18 @@ export async function scrapeRoomspot(browser: Browser): Promise<number> {
         priority: item.cleanPrice <= 500 ? 'high' : 'normal',
       });
 
-      if (result.isNew) {
+      if (result.inserted) {
         newCount++;
         // Discord alert for cheap listings near campus
         if (item.cleanPrice <= 500) {
-          sendDiscordAlert({
+          await sendDiscordAlert({
             title: item.title,
             rent: item.cleanPrice,
             url: item.url,
-            source: 'roomspot',
+            source: SOURCE,
             listing_type: item.title.toLowerCase().includes('studio') ? 'studio' : 'room',
             priority: 'high',
-          }).catch(() => {});
+          });
         }
       }
     }
