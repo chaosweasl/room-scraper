@@ -52,9 +52,9 @@ export async function scrapeRoomspot(browser: Browser): Promise<number> {
           : '';
         const priceEl = el.querySelector('.prijs');
         const rawPrice = priceEl ? priceEl.textContent?.trim() : '0';
-        const cleanPrice = parseFloat(
+        const cleanPrice = Math.round((parseFloat(
           rawPrice.replace(/[^\d.,]/g, '').replace(',', '.')
-        );
+        ) || 0) * 100) / 100;
         return { id: url, title, url, cleanPrice };
       })
     );

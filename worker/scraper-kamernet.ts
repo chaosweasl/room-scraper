@@ -16,7 +16,7 @@ const SEARCH_URLS = [
 function parsePrice(text: string): number {
   // "€ 450,00" → 450, "€ 1.234,56" → 1234.56
   const cleaned = text.replace(/[€\s]/g, '').replace(/\./g, '').replace(',', '.');
-  return parseFloat(cleaned) || 0;
+  return Math.round((parseFloat(cleaned) || 0) * 100) / 100;
 }
 
 function detectListingType(text: string): string {

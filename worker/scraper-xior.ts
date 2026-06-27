@@ -12,7 +12,7 @@ const SEARCH_URLS = [
 
 function parsePrice(text: string): number {
   const cleaned = text.replace(/[€\s]/g, '').replace(/\./g, '').replace(',', '.');
-  return parseFloat(cleaned) || 0;
+  return Math.round((parseFloat(cleaned) || 0) * 100) / 100;
 }
 
 function detectListingType(text: string): string {

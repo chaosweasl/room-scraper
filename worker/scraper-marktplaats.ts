@@ -9,7 +9,7 @@ function parsePrice(text: string): number {
   // "€ 730,00" → 730
   // "€ 1.234,56" → 1234.56
   const cleaned = text.replace(/[€\s]/g, '').replace(/\./g, '').replace(',', '.');
-  return parseFloat(cleaned) || 0;
+  return Math.round((parseFloat(cleaned) || 0) * 100) / 100;
 }
 
 function detectListingType(title: string, description: string): string {
@@ -64,23 +64,50 @@ export async function scrapeMarktplaats(browser: Browser): Promise<number> {
         // Link
         const linkEl = el.querySelector('a[href*="/v/"]');
         const relUrl = linkEl?.getAttribute('href') || '';
-        const url = relUrl ? 'https://www.marktplaats.nl' + relUrl : '';
+        let url = relUrl ? 'https://www.marktplaats.nl' + relUrl : '';
+        // Strip tracking params from URLs
+        url = url.replace(/[?&]c=[^&]+/, '').replace(/[?&]casData=[^&]+/, '').replace(/\?$/, '');
 
         // Title and description area — split by newlines BEFORE collapsing whitespace
         const descArea = el.querySelector('[class*="title-description"]');
         const rawText = descArea?.textContent?.trim() || '';
         // Split on newlines first, then clean each line
         const rawLines = rawText.split('\n').map(l => l.trim().replace(/\s+/g, ' ')).filter(Boolean);
-        const title = rawLines[0] || 'Unknown';
+        let title = rawLines[0] || 'Unknown';
+        // If title is too long (description merged in), truncate at first period or comma
+        if (title.length > 80) {
+          const periodIdx = title.indexOf('.');
+          const commaIdx = title.indexOf(',');
+          const cutIdx = periodIdx > 0 ? periodIdx : (commaIdx > 0 ? commaIdx : 80);
+          title = title.substring(0, cutIdx).trim();
+        }
 
         // Price area
         const priceArea = el.querySelector('[class*="price-date"]');
         const priceText = priceArea?.textContent?.trim() || '';
         const priceLine = priceText.split('\n')[0] || '';
 
-        // Extract location from title or description
-        const locationMatch = title.match(/in\s+(\w+)/i);
-        const location = locationMatch ? locationMatch[1] : 'Enschede';
+        // Extract location — try address element first, then title patterns
+        let location = '';
+        const addrEl = el.querySelector('[class*="location"], [class*="address"], [class*="city"]');
+        if (addrEl) {
+          location = addrEl.textContent?.trim().split(',')[0] || '';
+        }
+        if (!location) {
+          // Try "in CityName" pattern from title
+          const locMatch = title.match(/\bin\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)\b/);
+          location = locMatch ? locMatch[1] : '';
+        }
+        if (!location) {
+          // Fallback: check for city names in description
+          for (const city of ['Enschede', 'Hengelo', 'Gronau', 'Oldenzaal', 'Almelo']) {
+            if (title.toLowerCase().includes(city.toLowerCase())) {
+              location = city;
+              break;
+            }
+          }
+        }
+        if (!location) location = 'Enschede';
 
         // Description snippet (everything after title)
         const description = rawLines.slice(1).join(' ').substring(0, 500);
@@ -94,8 +121,13 @@ export async function scrapeMarktplaats(browser: Browser): Promise<number> {
     for (const item of listings) {
       if (!item.url) continue;
       // Skip huurwoningen.nl syndicated listings (they redirect to a paywall)
-      if (item.url.includes('?c=')) {
+      if (item.url.includes('?c=') && item.url.includes('casData=')) {
         console.log(`  ⏭️ Skipping huurwoningen redirect: ${item.title.substring(0, 60)}`);
+        continue;
+      }
+      // Skip auto-generated junk titles from huurwoningen syndication
+      if (/^(Kamer|Studio|Huis|Appartement)\s+in\s+\w+\s+gevonden\s+voor/i.test(item.title)) {
+        console.log(`  ⏭️ Skipping junk syndicated listing: ${item.title.substring(0, 60)}`);
         continue;
       }
 
@@ -105,13 +137,21 @@ export async function scrapeMarktplaats(browser: Browser): Promise<number> {
       // Extract real Marktplaats ID from URL: /a123456789 or /m123456789
       const idMatch = item.url.match(/\/([am]\d{8,})/);
       const listingId = idMatch ? idMatch[1] : `r-${Math.random().toString(36).substring(2, 10)}`;
+      // Fix address: if address is just "ons" or other junk, use title to extract
+      let address = item.location;
+      if (!address || address.length < 3 || address === 'ons') {
+        // Try to extract a real address from the title
+        const addrMatch = item.title.match(/^([A-Z][a-zæøå]+(?:\s+[A-Z][a-zæøå]+){0,3})/);
+        address = addrMatch ? addrMatch[0].replace(/\s*[-–]\s*$/, '').trim() : 'Enschede';
+      }
+
       const result = await insertListing({
         id: `mp-${listingId}`,
         title: item.title,
         rent,
         url: item.url,
         source: SOURCE,
-        address: item.location,
+        address: address,
         listing_type: listingType,
         description: item.description || undefined,
         priority: 'normal',
