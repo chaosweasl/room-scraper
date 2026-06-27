@@ -3,7 +3,8 @@ import { ensureSchema, insertListing } from './shared/db';
 const SOURCE = 'kamernet';
 const BASE = 'https://kamernet.nl';
 const CITY = 'enschede';
-const MAX_RENT = 500;
+const MAX_RENT = 650; // Capture up to €650 — above that, even huurtoeslag won't bridge it
+const HUURTOESLAG_THRESHOLD = 500; // Listings above this need toeslag check
 const MAX_PAGES = 15; // Kamernet shows up to 15 pages
 
 // Listing type names for URL construction
@@ -116,7 +117,7 @@ export async function scrapeKamernet(): Promise<number> {
     for (const l of listings) {
       totalSeen++;
 
-      // Skip listings over budget
+      // Skip listings way over budget (even huurtoeslag won't help)
       if (l.totalRentalPrice > MAX_RENT) continue;
       anyOnPage = true;
 
@@ -133,9 +134,18 @@ export async function scrapeKamernet(): Promise<number> {
       // Build address
       const address = `${l.street}, ${l.city}`;
 
-      // Priority
+      // Priority + huurtoeslag awareness
       let priority = 'normal';
-      if (l.totalRentalPrice <= 400) priority = 'high';
+      let toeslagNote = '';
+      if (l.totalRentalPrice <= 400) {
+        priority = 'high'; // Instant Discord alert
+      } else if (l.totalRentalPrice <= HUURTOESLAG_THRESHOLD) {
+        priority = 'high'; // Under €500 — safe buy
+      } else {
+        // €500-€650: needs huurtoeslag check — basis huur (excl. utilities) may qualify
+        toeslagNote = '\n⚠️ Over €500 — check if basis huur qualifies for huurtoeslag (under-21 threshold ~€498)';
+        priority = 'normal';
+      }
 
       // Description
       const availDate = l.availabilityStartDate
@@ -143,7 +153,7 @@ export async function scrapeKamernet(): Promise<number> {
         : 'Availability not specified';
       const utils = l.utilitiesIncluded ? 'Utilities included' : 'Utilities excluded';
       const img = l.fullPreviewImageUrl ? `\nImage: ${l.fullPreviewImageUrl}` : '';
-      const description = `${typeName} in ${l.city}\n${l.surfaceArea}m², ${furnishing || 'furnishing not specified'}\n€${l.totalRentalPrice}/mo (${utils})\n${availDate}${img}`;
+      const description = `${typeName} in ${l.city}\n${l.surfaceArea}m², ${furnishing || 'furnishing not specified'}\n€${l.totalRentalPrice}/mo (${utils})\n${availDate}${toeslagNote}${img}`;
 
       const result = await insertListing({
         id: listingId,
@@ -165,7 +175,7 @@ export async function scrapeKamernet(): Promise<number> {
       }
     }
 
-    // If no listings on this page were under €500 and we've done 5+ pages, stop early
+    // If no listings on this page were in budget and we've done 5+ pages, stop early
     if (!anyOnPage && page >= 5) {
       console.log(`  ⏹️ No more listings under €${MAX_RENT} — stopping at page ${page}`);
       break;
