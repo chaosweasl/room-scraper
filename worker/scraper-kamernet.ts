@@ -1,327 +1,193 @@
-import { Browser } from 'playwright';
-import * as fs from 'fs';
-import * as path from 'path';
 import { ensureSchema, insertListing } from './shared/db';
-import { sendDiscordAlert } from './shared/discord';
 
 const SOURCE = 'kamernet';
-const COOKIE_PATH = '/app/data/kamernet-session.json';
-const LOGIN_URL = 'https://kamernet.nl/en/login';
-const SEARCH_URLS = [
-  'https://kamernet.nl/en/rooms/netherlands/enschede?maxRent=600',
-  'https://kamernet.nl/en/rooms?city=Enschede&maxPrice=600',
-  'https://kamernet.nl/en/rooms/enschede?maxRent=600',
-];
+const BASE = 'https://kamernet.nl';
+const CITY = 'enschede';
+const MAX_RENT = 500;
+const MAX_PAGES = 15; // Kamernet shows up to 15 pages
 
-function parsePrice(text: string): number {
-  // "€ 450,00" → 450, "€ 1.234,56" → 1234.56
-  const cleaned = text.replace(/[€\s]/g, '').replace(/\./g, '').replace(',', '.');
-  return Math.round((parseFloat(cleaned) || 0) * 100) / 100;
+// Listing type names for URL construction
+const LISTING_TYPE_MAP: Record<number, string> = {
+  1: 'room',
+  2: 'apartment',
+  3: 'studio',
+  4: 'student-housing',
+};
+
+// Furnishing IDs:
+// 1 = uncarpeted, 2 = unfurnished, 3 = ?, 4 = furnished
+
+interface KamernetListing {
+  listingId: number;
+  street: string;
+  streetSlug: string;
+  city: string;
+  citySlug: string;
+  totalRentalPrice: number;
+  utilitiesIncluded: boolean;
+  listingType: number;
+  surfaceArea: number;
+  availabilityStartDate: string;
+  furnishingId: number;
+  isNewAdvert: boolean;
+  isStudentHouseAdvert: boolean;
+  studentHouseId: number | null;
+  fullPreviewImageUrl: string;
 }
 
-function detectListingType(text: string): string {
-  const lower = text.toLowerCase();
-  if (lower.includes('studio')) return 'studio';
-  if (lower.includes('appartement') || lower.includes('apartment')) return 'apartment';
-  if (lower.includes('room') || lower.includes('kamer')) return 'room';
-  return 'unknown';
+interface PageData {
+  listings: KamernetListing[];
+  total: number;
 }
 
-function generateId(url: string): string {
-  return `km-${Buffer.from(url).toString('base64').substring(0, 32)}`;
-}
-
-async function loadCookies(context: any): Promise<boolean> {
+/**
+ * Fetch one page of Kamernet search results and parse __NEXT_DATA__
+ */
+async function fetchPage(page: number): Promise<PageData | null> {
+  const url = `${BASE}/en/for-rent/room-${CITY}?page=${page}`;
   try {
-    if (fs.existsSync(COOKIE_PATH)) {
-      const raw = fs.readFileSync(COOKIE_PATH, 'utf-8');
-      const cookies = JSON.parse(raw);
-      if (Array.isArray(cookies) && cookies.length > 0) {
-        await context.addCookies(cookies);
-        console.log('🍪 Loaded saved Kamernet session cookies');
-        return true;
-      }
+    const resp = await fetch(url, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36',
+        'Accept': 'text/html,application/xhtml+xml',
+        'Accept-Language': 'en-US,en;q=0.9',
+      },
+      signal: AbortSignal.timeout(15000),
+    });
+    if (!resp.ok) {
+      console.error(`❌ Kamernet page ${page}: HTTP ${resp.status}`);
+      return null;
     }
-  } catch (err: any) {
-    console.log('⚠️ Could not load cookies:', err.message);
-  }
-  return false;
-}
+    const html = await resp.text();
 
-async function saveCookies(context: any): Promise<void> {
-  try {
-    const dir = path.dirname(COOKIE_PATH);
-    if (!fs.existsSync(dir)) {
-      fs.mkdirSync(dir, { recursive: true });
+    // Extract __NEXT_DATA__ JSON
+    const match = html.match(/<script id="__NEXT_DATA__"[^>]*>(.*?)<\/script>/);
+    if (!match) {
+      console.error(`❌ Kamernet page ${page}: No __NEXT_DATA__ found`);
+      return null;
     }
-    const cookies = await context.cookies();
-    fs.writeFileSync(COOKIE_PATH, JSON.stringify(cookies, null, 2));
-    console.log('💾 Saved Kamernet session cookies');
-  } catch (err: any) {
-    console.log('⚠️ Could not save cookies:', err.message);
+
+    const data = JSON.parse(match[1]);
+    const fr = data?.props?.pageProps?.targetPageProps?.findListingsResponse;
+    if (!fr?.listings) {
+      console.error(`❌ Kamernet page ${page}: No listings in data`);
+      return null;
+    }
+
+    return {
+      listings: fr.listings as KamernetListing[],
+      total: fr.total as number,
+    };
+  } catch (err) {
+    console.error(`❌ Kamernet page ${page} error:`, (err as Error).message);
+    return null;
   }
 }
 
-async function performLogin(page: any): Promise<boolean> {
-  const email = process.env.KAMERNET_EMAIL;
-  const password = process.env.KAMERNET_PASSWORD;
-
-  if (!email || !password || email.includes('your_kamernet')) {
-    console.log('⚠️ Kamernet credentials not configured — browsing without login');
-    return false;
-  }
-
-  console.log('🔑 Logging into Kamernet...');
-
-  await page.goto(LOGIN_URL, { waitUntil: 'domcontentloaded', timeout: 30000 });
-
-  // Handle cookie consent banner first
-  try {
-    const cookieBtn = page.locator(
-      'button:has-text("Accept"), button:has-text("Accepteren"), button:has-text("Alles accepteren"), button:has-text("Akkoord")'
-    );
-    await cookieBtn.click({ timeout: 3000 });
-    await page.waitForTimeout(500);
-  } catch {
-    // ignore
-  }
-
-  // Wait for and fill login form
-  try {
-    await page.waitForSelector(
-      'input[type="email"], input[name="email"], input[placeholder*="email" i], input[placeholder*="e-mail" i]',
-      { timeout: 10000 }
-    );
-  } catch {
-    console.log('⚠️ Login form not found');
-    return false;
-  }
-
-  // Fill email
-  await page.fill(
-    'input[type="email"], input[name="email"], input[placeholder*="email" i], input[placeholder*="e-mail" i]',
-    email
-  );
-  // Fill password
-  await page.fill('input[type="password"], input[name="password"]', password);
-
-  // Click submit
-  await page.click(
-    'button[type="submit"], button:has-text("Log in"), button:has-text("Login"), button:has-text("Inloggen"), button:has-text("Sign in")'
-  );
-
-  // Wait for post-login navigation
-  try {
-    await page.waitForURL('**/kamernet.nl/**', { timeout: 15000 });
-    await page.waitForTimeout(3000);
-  } catch {
-    console.log('⚠️ Login navigation timed out — checking if still logged in');
-  }
-
-  // Verify login success
-  const isLoggedIn =
-    (await page.locator(
-      '[class*="user-menu"], [class*="profile"], [class*="dashboard"], [class*="avatar"], [data-testid="user-menu"], [class*="logged-in"]'
-    ).count()) > 0;
-
-  // Also check that we no longer see the login form
-  const stillOnLogin =
-    (await page.locator('input[type="email"], input[name="email"]').count()) === 0;
-
-  if (isLoggedIn || stillOnLogin) {
-    console.log('✅ Kamernet login successful');
-    return true;
-  }
-
-  console.log('⚠️ Could not verify Kamernet login — proceeding anyway');
-  return true;
+/**
+ * Build the listing detail URL on Kamernet
+ */
+function buildListingUrl(listing: KamernetListing): string {
+  const typeSlug = LISTING_TYPE_MAP[listing.listingType] || 'room';
+  const typeId = listing.listingType === 1 ? 'room' : listing.listingType === 2 ? 'apartment' : 'studio';
+  return `${BASE}/en/for-rent/${typeSlug}-${listing.citySlug}/${listing.streetSlug}/${typeId}-${listing.listingId}`;
 }
 
-export async function scrapeKamernet(browser: Browser): Promise<number> {
-  console.log('\n🏠 === KAMERNET SCRAPER STARTING ===');
+/**
+ * Scrape Kamernet for Enschede listings
+ */
+export async function scrapeKamernet(): Promise<number> {
+  console.log(`🔍 Starting Kamernet scraper for ${CITY} (max €${MAX_RENT})...`);
   await ensureSchema();
 
-  const context = await browser.newContext({
-    viewport: { width: 1920, height: 1080 },
-    userAgent:
-      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-  });
-  const page = await context.newPage();
-  let totalInserted = 0;
+  let newCount = 0;
+  let totalSeen = 0;
+  let totalAvailable = 0;
 
-  try {
-    // ── 1. Authenticate (load cached cookies or perform fresh login) ──
-    const hasCookies = await loadCookies(context);
+  for (let page = 1; page <= MAX_PAGES; page++) {
+    const pageData = await fetchPage(page);
+    if (!pageData) break;
 
-    if (hasCookies) {
-      // Verify cookies are still valid by visiting a protected page
-      await page.goto('https://kamernet.nl/en/dashboard', {
-        waitUntil: 'domcontentloaded',
-        timeout: 30000,
-      });
-      await page.waitForTimeout(2000);
+    const { listings, total } = pageData;
+    totalAvailable = total;
+    console.log(`  Page ${page}: ${listings.length} listings (total available: ${total})`);
 
-      // If we land back on the login form, the session expired
-      const needsLogin =
-        (await page.locator('input[type="email"], input[name="email"]').count()) > 0;
+    let anyOnPage = false;
+    for (const l of listings) {
+      totalSeen++;
 
-      if (needsLogin) {
-        console.log('⚠️ Saved session expired — re-logging in');
-        const loggedIn = await performLogin(page);
-        if (loggedIn) await saveCookies(context);
-      } else {
-        console.log('✅ Session cookies still valid');
-      }
-    } else {
-      // No cached cookies — fresh login
-      const loggedIn = await performLogin(page);
-      if (loggedIn) await saveCookies(context);
-    }
+      // Skip listings over budget
+      if (l.totalRentalPrice > MAX_RENT) continue;
+      anyOnPage = true;
 
-    // ── 2. Search for listings ──
-    let listings: any[] = [];
+      // Build listing ID (source-specific)
+      const listingId = `kamernet-${l.listingId}`;
+      const url = buildListingUrl(l);
 
-    for (const searchUrl of SEARCH_URLS) {
-      if (listings.length > 0) break;
+      // Build title
+      const typeName = LISTING_TYPE_MAP[l.listingType] || 'Property';
+      const furnishing = l.furnishingId === 4 ? 'furnished' : l.furnishingId === 2 ? 'unfurnished' : '';
+      const studentTag = l.isStudentHouseAdvert ? ' (student house)' : '';
+      const title = `${typeName}${studentTag} — ${l.street}, ${l.city} — ${l.surfaceArea}m² ${furnishing}`.trim();
 
-      console.log(`  Trying search: ${searchUrl}`);
-      await page.goto(searchUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
+      // Build address
+      const address = `${l.street}, ${l.city}`;
 
-      // Give React/AJAX time to render listing cards
-      await page.waitForTimeout(3000);
+      // Priority
+      let priority = 'normal';
+      if (l.totalRentalPrice <= 400) priority = 'high';
 
-      // Dismiss any cookie / consent banner that may appear on search page
-      try {
-        const cookieBtn = page.locator(
-          'button:has-text("Accept"), button:has-text("Accepteren"), button:has-text("Akkoord")'
-        );
-        await cookieBtn.click({ timeout: 3000 });
-        await page.waitForTimeout(500);
-      } catch {
-        // ignore
-      }
-
-      // Try multiple selectors to find listing cards
-      const cardSelectors = [
-        '[class*="room-card"]',
-        '[class*="listing-card"]',
-        '[class*="search-result"]',
-        '[class*="property-card"]',
-        '[class*="RoomCard"]',
-        '[class*="ListingTile"]',
-        '[data-testid*="listing"]',
-        'article',
-        'a[href*="/rooms/"][href*="/enschede"]',
-      ];
-
-      for (const sel of cardSelectors) {
-        try {
-          await page.waitForSelector(sel, { timeout: 5000 });
-          const count = await page.locator(sel).count();
-          if (count > 0) {
-            console.log(`📋 Found ${count} Kamernet elements using "${sel}"`);
-
-            listings = await page.$$eval(sel, (elements) => {
-              return elements.map((el) => {
-                const titleEl = el.querySelector(
-                  'h2, h3, h4, [class*="title"], [class*="name"]'
-                );
-                const priceEl = el.querySelector(
-                  '[class*="price"], span:has-text("€"), [class*="rent"]'
-                );
-                const addressEl = el.querySelector(
-                  '[class*="address"], [class*="location"], [class*="city"], [class*="street"]'
-                );
-                // If the matched element is itself an <a>, use it directly
-                const linkEl =
-                  el.tagName === 'A' ? el : el.querySelector('a[href]');
-                const descEl = el.querySelector(
-                  '[class*="description"], [class*="info"], p'
-                );
-                const dateEl = el.querySelector(
-                  '[class*="available"], [class*="date"], [class*="from"]'
-                );
-
-                const title =
-                  titleEl?.textContent?.trim() ||
-                  el.textContent?.split('\n')[0]?.trim() ||
-                  'Unknown';
-                const priceText = priceEl?.textContent?.trim() || '';
-                const address = addressEl?.textContent?.trim() || 'Enschede';
-                const relUrl = linkEl?.getAttribute('href') || '';
-                const url = relUrl
-                  ? relUrl.startsWith('http')
-                    ? relUrl
-                    : 'https://kamernet.nl' + relUrl
-                  : '';
-                const description =
-                  descEl?.textContent?.trim()?.substring(0, 500) || '';
-                const availableDate = dateEl?.textContent?.trim() || '';
-
-                return { title, priceText, address, url, description, availableDate };
-              });
-            });
-
-            if (listings.length > 0) break; // stop trying selectors
-          }
-        } catch {
-          continue;
-        }
-      }
-    }
-
-    console.log(`📋 Extracted ${listings.length} Kamernet listings`);
-
-    // ── 3. Process each listing ──
-    for (const item of listings) {
-      if (!item.url) continue;
-
-      const rent = parsePrice(item.priceText);
-      const listingType = detectListingType(item.title + ' ' + item.description);
-      const priority = rent > 0 && rent <= 500 ? 'high' : 'normal';
-
-      const description = item.availableDate
-        ? `Available: ${item.availableDate} | ${item.description}`
-        : item.description || undefined;
+      // Description
+      const availDate = l.availabilityStartDate
+        ? `Available from: ${new Date(l.availabilityStartDate).toLocaleDateString('en-GB')}`
+        : 'Availability not specified';
+      const utils = l.utilitiesIncluded ? 'Utilities included' : 'Utilities excluded';
+      const img = l.fullPreviewImageUrl ? `\nImage: ${l.fullPreviewImageUrl}` : '';
+      const description = `${typeName} in ${l.city}\n${l.surfaceArea}m², ${furnishing || 'furnishing not specified'}\n€${l.totalRentalPrice}/mo (${utils})\n${availDate}${img}`;
 
       const result = await insertListing({
-        id: generateId(item.url),
-        title: item.title,
-        rent,
-        url: item.url,
+        id: listingId,
+        title,
+        rent: l.totalRentalPrice,
+        url,
         source: SOURCE,
-        address: item.address,
-        listing_type: listingType,
+        address,
+        listing_type: typeName,
         description,
         priority,
       });
 
       if (result.inserted) {
-        totalInserted++;
-        console.log(
-          `  ➕ NEW${priority === 'high' ? ' (HIGH PRIORITY)' : ''}: ${item.title} — €${rent}`
-        );
-
-        // Discord alert for high-priority (under €500)
-        if (priority === 'high') {
-          await sendDiscordAlert({
-            title: item.title,
-            rent,
-            url: item.url,
-            source: SOURCE,
-            address: item.address,
-            listing_type: listingType,
-            priority: 'high',
-          });
-        }
+        newCount++;
+        console.log(`  ✅ NEW: €${l.totalRentalPrice} — ${l.street}, ${l.city}`);
+      } else if (result.isNew === false) {
+        // Already in DB — skip silently
       }
     }
-  } catch (error) {
-    console.error('❌ Kamernet scraper error:', error);
-  } finally {
-    await context.close();
+
+    // If no listings on this page were under €500 and we've done 5+ pages, stop early
+    if (!anyOnPage && page >= 5) {
+      console.log(`  ⏹️ No more listings under €${MAX_RENT} — stopping at page ${page}`);
+      break;
+    }
+
+    // Small delay to avoid hammering
+    if (page < MAX_PAGES) {
+      await new Promise(r => setTimeout(r, 500 + Math.random() * 500));
+    }
   }
 
-  console.log(`🏠 Kamernet done — ${totalInserted} new listings inserted`);
-  return totalInserted;
+  console.log(`📊 Kamernet: ${totalSeen} listings checked, ${newCount} new found (total available: ${totalAvailable})`);
+  return newCount;
+}
+
+// Allow standalone run
+if (require.main === module) {
+  scrapeKamernet().then(n => {
+    console.log(`\n🏁 Done — ${n} new listings`);
+    process.exit(0);
+  }).catch(err => {
+    console.error('Fatal:', err);
+    process.exit(1);
+  });
 }

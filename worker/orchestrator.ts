@@ -1,6 +1,7 @@
 import { chromium } from 'playwright-extra';
 import stealthPlugin from 'puppeteer-extra-plugin-stealth';
 import { ensureSchema } from './shared/db';
+import { scrapeKamernet } from './scraper-kamernet';
 import { scrapeMarktplaats } from './scraper-marktplaats';
 import { scrapePararius } from './scraper-pararius';
 import { scrapeRoomspot } from './scraper-roomspot';
@@ -28,6 +29,7 @@ async function runAllScrapers() {
 
   try {
     // Run all scrapers sequentially, sharing the browser instance
+    totalNew += await scrapeKamernet();
     totalNew += await scrapeMarktplaats(browser);
     totalNew += await scrapePararius(browser);
     totalNew += await scrapeRoomspot(browser);
