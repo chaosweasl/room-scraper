@@ -1,174 +1,105 @@
 import { Browser } from 'playwright';
-import { ensureSchema, insertListing } from './shared/db';
+import { chromium } from 'playwright-extra';
+import stealthPlugin from 'puppeteer-extra-plugin-stealth';
 import { sendDiscordAlert } from './shared/discord';
 
+chromium.use(stealthPlugin());
+
 const SOURCE = 'xior';
-// Xior redirects to xiorstudenthousing.eu — try multiple URL patterns
-const SEARCH_URLS = [
-  'https://www.xior.nl/en/student-rooms/enschede/',
-  'https://www.xiorstudenthousing.eu/en/search?city=Enschede',
-  'https://www.xior.nl/en/search?city=Enschede',
-];
+const ARIENSPLEIN_URL = 'https://www.xiorstudenthousing.eu/netherlands/enschede/ariensplein-student-accommodation/';
+const ROOM_TYPES = ['Comfy', 'Comfy (balcony)'];
 
-function parsePrice(text: string): number {
-  const cleaned = text.replace(/[€\s]/g, '').replace(/\./g, '').replace(',', '.');
-  return Math.round((parseFloat(cleaned) || 0) * 100) / 100;
-}
+export async function checkXiorAvailability(_sharedBrowser: Browser): Promise<number> {
+  console.log('\n🏘️ === XIOR AVAILABILITY CHECKER STARTING ===');
 
-function detectListingType(text: string): string {
-  const lower = text.toLowerCase();
-  if (lower.includes('studio')) return 'studio';
-  if (lower.includes('apartment') || lower.includes('appartement')) return 'apartment';
-  if (lower.includes('room') || lower.includes('kamer')) return 'room';
-  return 'unknown';
-}
+  // Launch headed browser (Cloudflare needs full fingerprint — Xvfb provides virtual display)
+  const browser = await chromium.launch({
+    headless: false,
+    args: [
+      '--no-sandbox',
+      '--disable-setuid-sandbox',
+      '--disable-dev-shm-usage',
+      '--disable-blink-features=AutomationControlled',
+    ],
+  });
 
-export async function scrapeXior(browser: Browser): Promise<number> {
-  console.log('\n🏘️ === XIOR SCRAPER STARTING ===');
-  await ensureSchema();
+  const context = await browser.newContext({
+    viewport: { width: 1920, height: 1080 },
+    userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+    locale: 'en-GB',
+  });
 
-  let totalInserted = 0;
+  const page = await context.newPage();
+  let foundAvailability = false;
 
-  for (const url of SEARCH_URLS) {
-    if (totalInserted > 0) break; // Stop if we got data from a previous URL
+  try {
+    console.log('📍 Loading Ariensplein page...');
+    await page.goto(ARIENSPLEIN_URL, { waitUntil: 'networkidle', timeout: 60000 });
+    console.log('✅ Ariensplein page loaded');
+    await page.waitForTimeout(2000);
 
-    const context = await browser.newContext({
-      viewport: { width: 1920, height: 1080 },
-      userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-    });
+    // Find and click "Book a room"
+    console.log('🔍 Looking for "Book a room"...');
+    const bookBtn = page.locator('a, button').filter({ hasText: /book.*room|reserveer|boek|book now/i }).first();
+    if (await bookBtn.count() > 0) {
+      await bookBtn.scrollIntoViewIfNeeded();
+      await bookBtn.click({ timeout: 5000 });
+      console.log('✅ Clicked "Book a room"');
+      await page.waitForTimeout(3000);
+    } else {
+      console.log('⚠️ No "Book a room" button found');
+      return 0;
+    }
 
-    const page = await context.newPage();
+    // Try each room type
+    for (const roomType of ROOM_TYPES) {
+      console.log(`🔍 Checking: "${roomType}"...`);
+      const roomOption = page.locator('label, button, div[role="button"], a, span').filter({ hasText: roomType }).first();
+      if (await roomOption.count() > 0) {
+        await roomOption.scrollIntoViewIfNeeded();
+        await roomOption.click({ timeout: 5000 });
+        console.log(`✅ Selected "${roomType}"`);
+        await page.waitForTimeout(1500);
 
-    try {
-      console.log(`  Trying URL: ${url}`);
-      const response = await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 });
-
-      if (!response || response.status() === 403) {
-        console.log(`  ⚠️ 403 Forbidden for ${url} — trying next URL`);
-        await context.close();
-        continue;
-      }
-
-      console.log(`✅ Xior page loaded (${response.status()})`);
-
-      // Handle cookie consent
-      try {
-        const cookieBtn = page.locator('button:has-text("Accept"), button:has-text("Accepteren"), button:has-text("All cookies"), button:has-text("Accept all")');
-        await cookieBtn.click({ timeout: 3000 });
-        console.log('🍪 Cookie banner dismissed');
-      } catch {
-        // Ignore
-      }
-
-      // Wait for listings
-      const selectors = [
-        '.property-card',
-        '.room-card',
-        '[class*="property"]',
-        '[class*="listing"]',
-        '[class*="room"]',
-        'article',
-        '.card',
-        '.residence-card',
-      ];
-
-      let listingElements: any[] = [];
-      for (const sel of selectors) {
-        try {
-          await page.waitForSelector(sel, { timeout: 5000 });
-          listingElements = await page.$$(sel);
-          if (listingElements.length > 0) {
-            console.log(`📋 Found ${listingElements.length} Xior elements using "${sel}"`);
-            break;
-          }
-        } catch {
-          continue;
+        const nextBtn = page.locator('a, button, input[type="submit"]').filter({ hasText: /next|volgende|continue|verder/i }).first();
+        if (await nextBtn.count() > 0) {
+          await nextBtn.scrollIntoViewIfNeeded();
+          await nextBtn.click({ timeout: 5000 });
+          console.log('✅ Clicked Next');
+          await page.waitForTimeout(3000);
         }
-      }
 
-      if (listingElements.length === 0) {
-        // Try to extract from page content
-        const pageText = await page.evaluate(() => document.body.innerText.substring(0, 2000));
-        console.log(`  Page text preview: ${pageText.substring(0, 300)}`);
+        const pageText = (await page.textContent('body')) || '';
+        const noRoomPhrases = ['no room available', 'no availability', 'uitverkocht', 'niet beschikbaar', 'no results', 'sold out'];
+        const isUnavailable = noRoomPhrases.some(phrase => pageText.toLowerCase().includes(phrase));
 
-        // If page has "Enschede" and prices, try extracting manually
-        if (pageText.toLowerCase().includes('enschede')) {
-          console.log('  Page contains Enschede content — attempting manual extraction');
-        }
-      }
-
-      // Try common Xior selectors
-      const listings = await page.$$eval(
-        '.property-card, .room-card, [class*="property"], [class*="room-item"], article, .card, .residence-card',
-        (elements) => {
-          return elements.filter(el => {
-            // Filter to only elements that look like listings
-            const text = el.textContent?.toLowerCase() || '';
-            return text.includes('€') || text.includes('enschede') || text.includes('room') || text.includes('studio');
-          }).map(el => {
-            const titleEl = el.querySelector('h2, h3, h4, [class*="title"], [class*="name"]');
-            const priceEl = el.querySelector('[class*="price"]');
-            const addressEl = el.querySelector('[class*="location"], [class*="address"], [class*="city"]');
-            const linkEl = el.querySelector('a[href]');
-            const dateEl = el.querySelector('[class*="available"], [class*="date"]');
-
-            const title = titleEl?.textContent?.trim() || el.textContent?.split('\n')[0]?.trim() || 'Unknown';
-            const priceText = priceEl?.textContent?.trim() || '';
-            const address = addressEl?.textContent?.trim() || 'Enschede';
-            const availability = dateEl?.textContent?.trim() || '';
-            const relUrl = linkEl?.getAttribute('href') || '';
-            const url = relUrl ? (relUrl.startsWith('http') ? relUrl : 'https://www.xior.nl' + relUrl) : '';
-
-            return { title, priceText, address, url, availability };
-          });
-        }
-      );
-
-      console.log(`📋 Extracted ${listings.length} Xior listings`);
-
-      for (const item of listings) {
-        if (!item.url) continue;
-
-        const rent = parsePrice(item.priceText);
-        const listingType = detectListingType(item.title);
-
-        const result = await insertListing({
-          id: `xr-${Buffer.from(item.url).toString('base64').substring(0, 32)}`,
-          title: item.title,
-          rent,
-          url: item.url,
-          source: SOURCE,
-          address: item.address,
-          listing_type: listingType,
-          description: item.availability ? `Available: ${item.availability}` : undefined,
-          priority: 'high', // Xior is always high priority — first-come-first-served!
-        });
-
-        if (result.inserted) {
-          totalInserted++;
-          console.log(`  ➕ NEW (HIGH PRIORITY): ${item.title} — €${rent}`);
-
-          // ALWAYS send Discord alert for Xior — it's urgent!
+        if (isUnavailable) {
+          console.log(`❌ ${roomType}: No rooms available`);
+        } else {
+          console.log(`🎉 ${roomType}: ROOM AVAILABLE!`);
+          foundAvailability = true;
           await sendDiscordAlert({
-            title: item.title,
-            rent,
-            url: item.url,
+            title: `🚨 XIOR ARIENSPLEIN — ${roomType} AVAILABLE!`,
+            rent: 0,
+            url: ARIENSPLEIN_URL,
             source: SOURCE,
-            address: item.address,
-            listing_type: listingType,
+            address: 'Ariensplein, Enschede',
+            listing_type: 'studio',
             priority: 'high',
           });
+          console.log('🔔 Discord alert sent!');
         }
+      } else {
+        console.log(`⚠️ Room type "${roomType}" not found`);
       }
-
-    } catch (error) {
-      console.error(`❌ Xior scraper error for ${url}:`, error);
-    } finally {
-      await context.close();
     }
+
+    if (!foundAvailability) console.log('📭 No Xior rooms available this cycle');
+  } catch (error) {
+    console.error('❌ Xior availability checker error:', error);
+  } finally {
+    await browser.close();
   }
 
-  console.log(`🏘️ Xior done — ${totalInserted} new listings inserted
-`);
-  return totalInserted;
+  return foundAvailability ? 1 : 0;
 }
