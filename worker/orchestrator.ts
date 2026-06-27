@@ -3,7 +3,6 @@ import stealthPlugin from 'puppeteer-extra-plugin-stealth';
 import { ensureSchema } from './shared/db';
 import { scrapeMarktplaats } from './scraper-marktplaats';
 import { scrapePararius } from './scraper-pararius';
-import { scrapeXior } from './scraper-xior';
 import { scrapeRoomspot } from './scraper-roomspot';
 import { scrapeKamernet } from './scraper-kamernet';
 
@@ -30,10 +29,9 @@ async function runAllScrapers() {
 
   try {
     // Run all scrapers sequentially, sharing the browser instance
-    totalNew += await scrapeRoomspot(browser);
     totalNew += await scrapeMarktplaats(browser);
     totalNew += await scrapePararius(browser);
-    totalNew += await scrapeXior(browser);
+    totalNew += await scrapeRoomspot(browser);
     totalNew += await scrapeKamernet(browser);
   } catch (error) {
     console.error('❌ Orchestrator error:', error);

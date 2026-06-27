@@ -107,7 +107,7 @@ export async function scrapeXior(browser: Browser): Promise<number> {
             return text.includes('€') || text.includes('enschede') || text.includes('room') || text.includes('studio');
           }).map(el => {
             const titleEl = el.querySelector('h2, h3, h4, [class*="title"], [class*="name"]');
-            const priceEl = el.querySelector('[class*="price"], span:has(> text:contains("€"))');
+            const priceEl = el.querySelector('[class*="price"]');
             const addressEl = el.querySelector('[class*="location"], [class*="address"], [class*="city"]');
             const linkEl = el.querySelector('a[href]');
             const dateEl = el.querySelector('[class*="available"], [class*="date"]');
