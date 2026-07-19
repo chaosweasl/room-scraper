@@ -3,8 +3,8 @@ import { ensureSchema, insertListing } from './shared/db';
 const SOURCE = 'kamernet';
 const BASE = 'https://kamernet.nl';
 const CITY = 'enschede';
-const MAX_RENT = 650; // Capture up to €650 — above that, even huurtoeslag won't bridge it
-const HUURTOESLAG_THRESHOLD = 500; // Listings above this need toeslag check
+const MAX_RENT = 750; // 2026: hard cap abolished — max toeslag on €498.20, net ~€400-550
+const HUURTOESLAG_THRESHOLD = 500; // Listings above this flag for toeslag check
 const MAX_PAGES = 15; // Kamernet shows up to 15 pages
 
 // Listing type names for URL construction
@@ -98,7 +98,7 @@ function buildListingUrl(listing: KamernetListing): string {
  * Scrape Kamernet for Enschede listings
  */
 export async function scrapeKamernet(): Promise<number> {
-  console.log(`🔍 Starting Kamernet scraper for ${CITY} (max €${MAX_RENT})...`);
+  console.log(`🔍 Starting Kamernet scraper for ${CITY} (max €${MAX_RENT}, 2026 toeslag rules)...`);
   await ensureSchema();
 
   let newCount = 0;
@@ -134,16 +134,17 @@ export async function scrapeKamernet(): Promise<number> {
       // Build address
       const address = `${l.street}, ${l.city}`;
 
-      // Priority + huurtoeslag awareness
+      // Priority + huurtoeslag awareness (2026 rules)
       let priority = 'normal';
       let toeslagNote = '';
       if (l.totalRentalPrice <= 400) {
         priority = 'high'; // Instant Discord alert
       } else if (l.totalRentalPrice <= HUURTOESLAG_THRESHOLD) {
-        priority = 'high'; // Under €500 — safe buy
+        priority = 'high'; // Under €500 — max toeslag, very affordable
       } else {
-        // €500-€650: needs huurtoeslag check — basis huur (excl. utilities) may qualify
-        toeslagNote = '\n⚠️ Over €500 — check if basis huur qualifies for huurtoeslag (under-21 threshold ~€498)';
+        // €500-€750: 2026 rules — hard cap gone, get max toeslag on €498.20 basis
+        // Net out-of-pocket ~€400-550/mo — viable for a private studio
+        toeslagNote = '\n⚠️ €500-€750 — 2026: hard cap abolished, toeslag calculated on ~€498 basis';
         priority = 'normal';
       }
 
