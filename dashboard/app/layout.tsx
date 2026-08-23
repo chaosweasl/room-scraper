@@ -6,8 +6,9 @@ import "./globals.css";
 const inter = Inter({ subsets: ["latin"] });
 
 export const metadata: Metadata = {
-  title: "Housing Radar",
-  description: "Automated Roomspot Scraper",
+  title: "KamerCatch",
+  description:
+    "Enschede student housing radar — automated room scraper with AI triage and Discord review.",
 };
 
 export default function RootLayout({

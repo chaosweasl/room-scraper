@@ -184,7 +184,7 @@ def email_body(listing, output_format='markdown'):
 
 def needs_manual_contact(source, url):
     """Check if this listing might need manual workarounds."""
-    if source == 'marktplatz' and ('huurwoningen' in url.lower() or 'redirect' in url.lower()):
+    if source == 'marktplaats' and ('huurwoningen' in url.lower() or 'redirect' in url.lower()):
         return True
     return False
 
@@ -406,8 +406,9 @@ def main():
     
     # Also generate individual files (markdown only for individual)
     for listing in listings:
-        safe_title = re.sub(r'[^a-zA-Z0-9]+', '-', listing['title'][:50]).strip('-')
-        indiv_file = os.path.join(OUTPUT_DIR, f"{safe_title}.{ext}")
+        safe_title = re.sub(r'[^a-zA-Z0-9]+', '-', listing['title'][:50]).strip('-') or 'listing'
+        safe_id = re.sub(r'[^a-zA-Z0-9]+', '-', listing['id'])[:40].strip('-')
+        indiv_file = os.path.join(OUTPUT_DIR, f"{safe_title}-{safe_id}.{ext}")
         with open(indiv_file, 'w', encoding='utf-8') as f:
             f.write(generate_email_draft(dict(listing), output_format=args.format))
     

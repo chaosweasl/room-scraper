@@ -22,7 +22,6 @@ import time
 import argparse
 import urllib.request
 import urllib.error
-import ssl
 import gzip
 import io
 
@@ -137,7 +136,6 @@ INTERNATIONAL_PATTERNS = [
     r'[Ee]ngelstalig\b',
     r'[Ww]e\s+speak\s+[Ee]nglish\b',
     r'[Ww]ij\s+spreken\s+[Ee]ngels\b',
-    r'[Ii]nternationals?\b',
     r'[Oo]pen\s+to\s+[Ii]nternationals?\b',
     r'[Tt]aal\s+maakt\s+niet\s+uit\b',
     r'[Ll]anguage\s+(does not|doesn\'t\s+)?(matter|not\s+important)\b',
@@ -163,10 +161,7 @@ def fetch_page_text(url: str) -> str | None:
         }
     )
     try:
-        ctx = ssl.create_default_context()
-        ctx.check_hostname = False
-        ctx.verify_mode = ssl.CERT_NONE
-        resp = urllib.request.urlopen(req, timeout=FETCH_TIMEOUT, context=ctx)
+        resp = urllib.request.urlopen(req, timeout=FETCH_TIMEOUT)
         raw = resp.read()
         
         # Handle gzip decompression
