@@ -58,3 +58,6 @@ kamernet-session.json
 
 # OS Files
 Thumbs.db
+
+# Developer Documents
+/docs
