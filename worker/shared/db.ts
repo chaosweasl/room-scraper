@@ -33,7 +33,8 @@ export interface Listing {
   draft_body: string | null;
   draft_language: string | null;
   triage_reason: string | null;
-  commute_minutes: number | null;
+  distance_minutes: number | null;
+  distance_mode: string | null;
 }
 
 export async function ensureSchema() {
@@ -71,7 +72,9 @@ export async function ensureSchema() {
     ["draft_body", "TEXT"],
     ["draft_language", "TEXT"],
     ["triage_reason", "TEXT"],
-    ["commute_minutes", "REAL"],
+    ["distance_minutes", "REAL"],
+    ["distance_mode", "TEXT"],
+    ["dedupe_key", "TEXT"],
   ];
 
   for (const [col, def] of desired) {
@@ -86,18 +89,64 @@ export async function ensureSchema() {
 // per-platform toggles (managed from the dashboard Configurator UI).
 // ---------------------------------------------------------------------------
 
-const DEFAULT_SETTINGS: Record<string, string> = {
-  scraper_kamernet: "true",
-  scraper_marktplaats: "true",
-  scraper_pararius: "true",
-  scraper_roomspot: "true",
-  scraper_xior: "true",
-  lang_req: "english_allowed",
-  pets: "no_pets_allowed",
-  min_age: "19",
-  max_rent: "600",
-  max_bike_minutes_to_campus: "20",
-};
+export const DEFAULT_LANDLORD_TEMPLATE = [
+  "Dear landlord,",
+  "",
+  'My name is {{name}}. I am a student at the University of Twente and I am very interested in your listing "{{title}}" at {{address}} for €{{rent}} per month.',
+  "",
+  "I am a quiet, tidy and responsible person. I do not smoke and I have no pets. I would love to schedule a viewing or answer any questions you may have.",
+  "",
+  "You can reach me at {{email}}.",
+  "",
+  "Best regards,",
+  "{{name}}",
+].join("\n");
+
+export const DEFAULT_COOPTATION_TEMPLATE = [
+  "Hi!",
+  "",
+  "My name is {{name}}, and I am a student at the University of Twente. I saw your room at {{address}} and I would love to introduce myself.",
+  "",
+  "I am easy-going, clean, and I like both studying and spending time together. No pets, no smoking, and I am looking for a longer stay.",
+  "",
+  "Feel free to message me at {{email}}. Hope to hear from you!",
+  "",
+  "Cheers,",
+  "{{name}}",
+].join("\n");
+
+function buildDefaultSettings(): Record<string, string> {
+  return {
+    // Platforms (Roomspot is the top priority source)
+    scraper_roomspot: "true",
+    scraper_marktplaats: "true",
+    scraper_pararius: "true",
+    scraper_xior: "true",
+    scraper_kamernet: "true",
+
+    // Profile
+    user_name: "",
+    user_email: "",
+
+    // Dealbreakers
+    skip_dutch_only: "true",
+    max_rent: "600",
+    // How far above max_rent a listing may still be shown (soft cap).
+    rent_flex: "100",
+    max_bike_minutes: "20",
+    max_walk_minutes: "25",
+
+    // Applying
+    // off = copy the draft and apply yourself
+    // review = fill the form and show a screenshot, but never submit
+    // auto = fill and submit when you tap Send
+    apply_mode: "off",
+
+    // Message templates
+    template_landlord: DEFAULT_LANDLORD_TEMPLATE,
+    template_cooptation: DEFAULT_COOPTATION_TEMPLATE,
+  };
+}
 
 export async function ensureSettings() {
   await db.execute(`
@@ -107,7 +156,7 @@ export async function ensureSettings() {
     )
   `);
 
-  for (const [key, value] of Object.entries(DEFAULT_SETTINGS)) {
+  for (const [key, value] of Object.entries(buildDefaultSettings())) {
     await db.execute({
       sql: "INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)",
       args: [key, value],
@@ -121,6 +170,25 @@ export async function getSetting(key: string): Promise<string | null> {
     args: [key],
   });
   return res.rows.length > 0 ? (res.rows[0].value as string) : null;
+}
+
+export async function getBooleanSetting(
+  key: string,
+  fallback = false,
+): Promise<boolean> {
+  const val = await getSetting(key);
+  if (val === null) return fallback;
+  return val === "true" || val === "1";
+}
+
+export async function getNumberSetting(
+  key: string,
+  fallback = 0,
+): Promise<number> {
+  const val = await getSetting(key);
+  if (val === null) return fallback;
+  const num = Number(val);
+  return Number.isFinite(num) ? num : fallback;
 }
 
 export async function getAllSettings(): Promise<Record<string, string>> {
@@ -164,11 +232,23 @@ export interface ListingInput {
 
 export async function insertListing(listing: ListingInput) {
   const dateFound = new Date().toISOString();
+  const key = buildDedupeKey(listing);
+
+  // Cross-source duplicate guard: the same room is often syndicated to several
+  // platforms. If another source already has an identical title + rent + type,
+  // skip it so the user doesn't see the same listing twice.
+  const existing = await db.execute({
+    sql: "SELECT id FROM listings WHERE dedupe_key = ? AND source != ? LIMIT 1",
+    args: [key, listing.source],
+  });
+  if (existing.rows.length > 0) {
+    return { inserted: false, isNew: false };
+  }
 
   const result = await db.execute({
     sql: `INSERT INTO listings
-        (id, title, rent, status, url, source, address, listing_type, phone, description, date_found, priority)
-      VALUES (?, ?, ?, 'new', ?, ?, ?, ?, ?, ?, ?, ?)
+        (id, title, rent, status, url, source, address, listing_type, phone, description, date_found, priority, dedupe_key)
+      VALUES (?, ?, ?, 'new', ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(id) DO NOTHING`,
     args: [
       listing.id,
@@ -182,11 +262,22 @@ export async function insertListing(listing: ListingInput) {
       listing.description || null,
       dateFound,
       listing.priority || "normal",
+      key,
     ],
   });
 
   const inserted = (result.rowsAffected ?? 0) > 0;
   return { inserted, isNew: inserted };
+}
+
+function buildDedupeKey(listing: ListingInput): string {
+  const title = (listing.title || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim();
+  const rent = Math.round(listing.rent || 0);
+  const type = (listing.listing_type || "").toLowerCase().trim();
+  return `${title}|${rent}|${type}`;
 }
 
 export async function updateListingStatus(id: string, status: string) {
@@ -217,11 +308,12 @@ export async function markListingApplied(id: string) {
 export async function setListingTriage(
   id: string,
   reason: string,
-  commuteMinutes: number | null,
+  distanceMinutes: number | null,
+  distanceMode: string | null,
 ) {
   await db.execute({
-    sql: "UPDATE listings SET triage_reason = ?, commute_minutes = ? WHERE id = ?",
-    args: [reason, commuteMinutes, id],
+    sql: "UPDATE listings SET triage_reason = ?, distance_minutes = ?, distance_mode = ? WHERE id = ?",
+    args: [reason, distanceMinutes, distanceMode, id],
   });
 }
 

@@ -151,20 +151,13 @@ export async function scrapeKamernet(): Promise<number> {
       // Build address
       const address = `${l.street}, ${l.city}`;
 
-      // Priority + huurtoeslag awareness (2026 rules)
-      let priority = "normal";
-      let toeslagNote = "";
-      if (l.totalRentalPrice <= 400) {
-        priority = "high"; // Instant Discord alert
-      } else if (l.totalRentalPrice <= HUURTOESLAG_THRESHOLD) {
-        priority = "high"; // Under €500 — max toeslag, very affordable
-      } else {
-        // €500-€750: 2026 rules — hard cap gone, get max toeslag on €498.20 basis
-        // Net out-of-pocket ~€400-550/mo — viable for a private studio
-        toeslagNote =
-          "\n⚠️ €500-€750 — 2026: hard cap abolished, toeslag calculated on ~€498 basis";
-        priority = "normal";
-      }
+      // Kamernet is always kept as a separate, low-alert source. The user may
+      // not have an active subscription, so we never mark it high priority.
+      const priority = "normal";
+      const toeslagNote =
+        l.totalRentalPrice > HUURTOESLAG_THRESHOLD
+          ? "\n⚠️ Above the huurtoeslag range"
+          : "";
 
       // Description
       const availDate = l.availabilityStartDate
@@ -195,8 +188,6 @@ export async function scrapeKamernet(): Promise<number> {
         console.log(
           `  ✅ NEW: €${l.totalRentalPrice} — ${l.street}, ${l.city}`,
         );
-      } else if (result.isNew === false) {
-        // Already in DB — skip silently
       }
     }
 

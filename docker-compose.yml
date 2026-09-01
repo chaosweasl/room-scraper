@@ -9,21 +9,18 @@ services:
       - ./data:/app/data
     environment:
       - DATABASE_URL=file:/app/data/housing.db
-      - DISCORD_WEBHOOK_URL=${DISCORD_WEBHOOK_URL:-your_discord_webhook_here}
+      - DISCORD_WEBHOOK_URL=${DISCORD_WEBHOOK_URL:-}
       - DISCORD_BOT_TOKEN=${DISCORD_BOT_TOKEN:-}
       - DISCORD_CHANNEL_ID=${DISCORD_CHANNEL_ID:-}
-      - EXECUTION_MODE=${EXECUTION_MODE:-manual}
-      - DRY_RUN=${DRY_RUN:-false}
-      - HERMES_BASE_URL=${HERMES_BASE_URL:-https://api.openai.com/v1}
-      - HERMES_API_KEY=${HERMES_API_KEY:-}
-      - HERMES_MODEL=${HERMES_MODEL:-gpt-4o-mini}
-      - OSRM_URL=${OSRM_URL:-https://router.project-osrm.org/route/v1}
-      - NOMINATIM_URL=${NOMINATIM_URL:-https://nominatim.openstreetmap.org/search}
-      - ROOMSPOT_EMAIL=${ROOMSPOT_EMAIL:-}
+      - ROOMSPOT_USERNAME=${ROOMSPOT_USERNAME:-}
       - ROOMSPOT_PASSWORD=${ROOMSPOT_PASSWORD:-}
       - KAMERNET_EMAIL=${KAMERNET_EMAIL:-}
       - KAMERNET_PASSWORD=${KAMERNET_PASSWORD:-}
+      - SCRAPE_INTERVAL_MINUTES=${SCRAPE_INTERVAL_MINUTES:-15}
       - ZERO_RESULT_ALERT_THRESHOLD=${ZERO_RESULT_ALERT_THRESHOLD:-3}
+      - ROOMSPOT_MAX_PAGES=${ROOMSPOT_MAX_PAGES:-3}
+      - MARKTPLAATS_MAX_PAGES=${MARKTPLAATS_MAX_PAGES:-5}
+      - XIOR_HEADLESS=${XIOR_HEADLESS:-true}
     ipc: host
     command: ["node", "dist/orchestrator.js"]
     healthcheck:

@@ -1,6 +1,9 @@
 import { createClient } from "@libsql/client";
 import { NextResponse } from "next/server";
 
+// Never run this route at build time; the database only exists at runtime.
+export const dynamic = "force-dynamic";
+
 const VALID_STATUSES = [
   "new",
   "drafted",

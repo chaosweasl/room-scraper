@@ -1,5 +1,5 @@
-import { Browser } from "playwright";
-import { insertListing } from "./shared/db";
+import { Browser, BrowserContext, Page } from "playwright";
+import { db, insertListing } from "./shared/db";
 import { sendDiscordAlert } from "./shared/discord";
 import { hashUrl } from "./shared/hash";
 import { ensureLoggedIn } from "./shared/auth";
@@ -8,8 +8,86 @@ const SOURCE = "roomspot";
 const LISTING_URL = "https://www.roomspot.nl/en/housing-offer/to-rent";
 const MAX_PAGES = Number(process.env.ROOMSPOT_MAX_PAGES || "3");
 
+interface RoomspotItem {
+  title: string;
+  url: string;
+  rent: number;
+  propertyType: string;
+  shortDescription: string;
+}
+
+function extractListings(page: Page): Promise<RoomspotItem[]> {
+  return page.$$eval("section.list-item", (elements) =>
+    elements.map((el) => {
+      const titleEl = el.querySelector(".object-address");
+      const address = titleEl
+        ? titleEl.textContent?.trim().replace(/\s+/g, " ")
+        : "Unknown Address";
+      const typeEl = el.querySelector(".woningtype");
+      const propertyType = typeEl
+        ? typeEl.textContent?.trim().toLowerCase()
+        : "";
+      const title = `${address} - ${propertyType}`;
+      const linkEl = el.querySelector("a[href]");
+      const url = linkEl
+        ? "https://www.roomspot.nl" + linkEl.getAttribute("href")
+        : "";
+      const priceEl = el.querySelector(".prijs");
+      const rawPrice = priceEl ? priceEl.textContent?.trim() : "0";
+      const cleanPrice =
+        Math.round(
+          (parseFloat(rawPrice.replace(/[^\d.,]/g, "").replace(",", ".")) ||
+            0) * 100,
+        ) / 100;
+
+      // Try to capture any short description that is already on the list page.
+      const descEl = el.querySelector(
+        '[class*="description"], [class*="omschrijving"], [class*="spec"]',
+      );
+      const shortDescription = descEl
+        ? descEl.textContent?.trim().replace(/\s+/g, " ").slice(0, 1000)
+        : "";
+
+      return { title, url, rent: cleanPrice, propertyType, shortDescription };
+    }),
+  );
+}
+
+/**
+ * Fetch the full description from a Roomspot detail page. Falls back to the
+ * short description when the detail page cannot be read.
+ */
+async function fetchDescription(
+  context: BrowserContext,
+  item: RoomspotItem,
+): Promise<string> {
+  if (!item.url) return item.shortDescription;
+  const page = await context.newPage();
+  try {
+    await page.goto(item.url, {
+      waitUntil: "domcontentloaded",
+      timeout: 20000,
+    });
+    const description = await page
+      .locator(
+        '[class*="description"], [class*="omschrijving"], [class*="text"], article, main',
+      )
+      .first()
+      .textContent()
+      .catch(() => "");
+    return (description || item.shortDescription)
+      .replace(/\s+/g, " ")
+      .trim()
+      .slice(0, 3000);
+  } catch {
+    return item.shortDescription;
+  } finally {
+    await page.close().catch(() => undefined);
+  }
+}
+
 export async function scrapeRoomspot(browser: Browser): Promise<number> {
-  console.log("🏠 Starting Roomspot scraper...");
+  console.log("🏠 Starting Roomspot scraper (top priority)...");
 
   const context = await browser.newContext({
     viewport: { width: 1920, height: 1080 },
@@ -37,7 +115,6 @@ export async function scrapeRoomspot(browser: Browser): Promise<number> {
     await ensureLoggedIn(page, SOURCE);
 
     for (let pageNum = 1; pageNum <= MAX_PAGES; pageNum++) {
-      // Wait for listings
       try {
         await page.waitForSelector("section.list-item", { timeout: 15000 });
       } catch {
@@ -51,61 +128,45 @@ export async function scrapeRoomspot(browser: Browser): Promise<number> {
         break;
       }
 
-      const listings = await page.$$eval("section.list-item", (elements) =>
-        elements.map((el) => {
-          const titleEl = el.querySelector(".object-address");
-          const address = titleEl
-            ? titleEl.textContent?.trim().replace(/\s+/g, " ")
-            : "Unknown Address";
-          const typeEl = el.querySelector(".woningtype");
-          const propertyType = typeEl
-            ? typeEl.textContent?.trim().toLowerCase()
-            : "";
-          const title = `${address} - ${propertyType}`;
-          const linkEl = el.querySelector("a[href]");
-          const url = linkEl
-            ? "https://www.roomspot.nl" + linkEl.getAttribute("href")
-            : "";
-          const priceEl = el.querySelector(".prijs");
-          const rawPrice = priceEl ? priceEl.textContent?.trim() : "0";
-          const cleanPrice =
-            Math.round(
-              (parseFloat(rawPrice.replace(/[^\d.,]/g, "").replace(",", ".")) ||
-                0) * 100,
-            ) / 100;
-          return { title, url, cleanPrice };
-        }),
-      );
-
+      const listings = await extractListings(page);
       console.log(
         `🔍 Roomspot page ${pageNum}: ${listings.length} listings found.`,
       );
 
       for (const item of listings) {
+        if (!item.url) continue;
+
         const result = await insertListing({
           id: hashUrl(item.url),
           title: item.title,
-          rent: item.cleanPrice,
+          rent: item.rent,
           url: item.url,
           source: SOURCE,
           address: item.title,
-          listing_type: item.title.toLowerCase().includes("studio")
+          listing_type: item.propertyType.includes("studio")
             ? "studio"
             : "room",
-          priority:
-            item.cleanPrice > 0 && item.cleanPrice <= 500 ? "high" : "normal",
+          description: item.shortDescription || undefined,
+          priority: item.rent > 0 && item.rent <= 500 ? "high" : "normal",
         });
 
         if (result.inserted) {
           newCount++;
-          // Discord alert for cheap listings near campus
-          if (item.cleanPrice > 0 && item.cleanPrice <= 500) {
+
+          // Roomspot is the #1 source: fetch the full description for new
+          // listings so distance and language filters have real text to read.
+          const description = await fetchDescription(context, item);
+          if (description) {
+            await dbUpdateDescription(hashUrl(item.url), description);
+          }
+
+          if (item.rent > 0 && item.rent <= 500) {
             await sendDiscordAlert({
               title: item.title,
-              rent: item.cleanPrice,
+              rent: item.rent,
               url: item.url,
               source: SOURCE,
-              listing_type: item.title.toLowerCase().includes("studio")
+              listing_type: item.propertyType.includes("studio")
                 ? "studio"
                 : "room",
               priority: "high",
@@ -132,7 +193,15 @@ export async function scrapeRoomspot(browser: Browser): Promise<number> {
     console.error("❌ Roomspot scraper error:", error);
     return 0;
   } finally {
-    await page.close();
-    await context.close();
+    await page.close().catch(() => undefined);
+    await context.close().catch(() => undefined);
   }
+}
+
+// Local helper to update a listing's description after the detail fetch.
+async function dbUpdateDescription(id: string, description: string) {
+  await db.execute({
+    sql: "UPDATE listings SET description = ? WHERE id = ?",
+    args: [description, id],
+  });
 }

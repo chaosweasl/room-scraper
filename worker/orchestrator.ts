@@ -71,23 +71,25 @@ async function runAllScrapers() {
   const results: SourceResult[] = [];
 
   try {
-    // Kamernet is fetch-based and doesn't use the shared browser.
-    await runIfEnabled("kamernet", scrapeKamernet, results);
-    // Browser-based scrapers run sequentially on the shared instance.
+    // Roomspot is the #1 priority source and always runs first.
+    await runIfEnabled("roomspot", () => scrapeRoomspot(browser), results);
     await runIfEnabled(
       "marktplaats",
       () => scrapeMarktplaats(browser),
       results,
     );
     await runIfEnabled("pararius", () => scrapePararius(browser), results);
-    await runIfEnabled("roomspot", () => scrapeRoomspot(browser), results);
-    // Xior launches its own (headless-by-default) browser internally.
+    // Xior launches its own browser internally.
     await runIfEnabled("xior", () => checkXiorAvailability(browser), results);
+    // Kamernet is kept separate and never marked high-alert. It scrapes even
+    // without credentials; credentials are only needed to actually contact
+    // landlords through the platform.
+    await runIfEnabled("kamernet", scrapeKamernet, results);
   } finally {
     await browser.close();
   }
 
-  // AI triage + commute filter for every newly scraped listing
+  // Deterministic triage + template drafts.
   try {
     const triageStats = await triageNewListings();
     console.log(
@@ -114,7 +116,8 @@ async function runAllScrapers() {
 // ---------------------------------------------------------
 // THE JITTER ENGINE (Anti-Ban Scheduling)
 // ---------------------------------------------------------
-const BASE_DELAY_MS = 15 * 60 * 1000; // 15 minutes
+const BASE_DELAY_MS =
+  (Number(process.env.SCRAPE_INTERVAL_MINUTES) || 15) * 60 * 1000;
 
 async function startEngine() {
   await runAllScrapers();

@@ -6,22 +6,25 @@ const STORAGE_DIR = process.env.AUTH_STORAGE_DIR || "/app/data/auth";
 
 interface AuthConfig {
   loginUrl: string;
-  emailEnv: string;
+  usernameEnv: string;
   passwordEnv: string;
-  emailSelector: string;
+  usernameSelector: string;
   passwordSelector: string;
   submitSelector: string;
   loggedInSelector: string;
 }
 
 // Login flow config per source. Selectors are best-effort and may need tuning
-// for the live site; the helper is defensive and falls back to anonymous scraping.
+// for the live site; the helper is defensive and falls back to anonymous
+// scraping.
 const AUTH_CONFIGS: Record<string, AuthConfig> = {
   roomspot: {
     loginUrl: "https://www.roomspot.nl/en/login",
-    emailEnv: "ROOMSPOT_EMAIL",
+    // Roomspot logs in with a username, not an email address.
+    usernameEnv: "ROOMSPOT_USERNAME",
     passwordEnv: "ROOMSPOT_PASSWORD",
-    emailSelector: "input[type='email'], input[name='email']",
+    usernameSelector:
+      "input[name='username'], input[name='user'], input[type='text']",
     passwordSelector: "input[type='password'], input[name='password']",
     submitSelector:
       "button[type='submit'], button:has-text('Login'), button:has-text('Inloggen')",
@@ -68,9 +71,9 @@ export async function ensureLoggedIn(
   }
 
   // 3. Credentials required for login.
-  const email = process.env[config.emailEnv];
+  const username = process.env[config.usernameEnv];
   const password = process.env[config.passwordEnv];
-  if (!email || !password) {
+  if (!username || !password) {
     return false; // anonymous mode — don't navigate away from the listing page
   }
 
@@ -79,7 +82,7 @@ export async function ensureLoggedIn(
       waitUntil: "domcontentloaded",
       timeout: 30000,
     });
-    await page.fill(config.emailSelector, email);
+    await page.fill(config.usernameSelector, username);
     await page.fill(config.passwordSelector, password);
     await Promise.all([
       page

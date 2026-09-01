@@ -11,18 +11,17 @@ import {
 import {
   getAllSettings,
   getListingById,
+  getSetting,
   markListingApplied,
   setListingDraft,
   updateListingStatus,
 } from "./shared/db";
-import { hermesDraft } from "./shared/hermes";
+import { renderListingDraft, draftLanguage } from "./shared/templates";
 import { submitApplication } from "./shared/apply";
 import { getStats } from "./shared/monitor";
 
 const TOKEN = process.env.DISCORD_BOT_TOKEN;
 const CHANNEL_ID = process.env.DISCORD_CHANNEL_ID;
-const EXECUTION_MODE = process.env.EXECUTION_MODE || "manual";
-const DRY_RUN = process.env.DRY_RUN === "true";
 
 let client: Client | null = null;
 
@@ -41,7 +40,6 @@ export function startBot() {
   client.once(Events.ClientReady, async () => {
     console.log(`🤖 Discord bot ready as ${client?.user?.tag}`);
 
-    // Register a simple slash command for health checks
     try {
       await client?.application?.commands.create({
         name: "status",
@@ -59,30 +57,47 @@ export function startBot() {
   client.login(TOKEN);
 }
 
-function buildButtons(listingId: string) {
-  return new ActionRowBuilder<ButtonBuilder>().addComponents(
+async function buildButtons(listingId: string) {
+  const applyMode = (await getSetting("apply_mode")) || "off";
+  const row = new ActionRowBuilder<ButtonBuilder>();
+
+  if (applyMode === "review" || applyMode === "auto") {
+    row.addComponents(
+      new ButtonBuilder()
+        .setCustomId(`send:${listingId}`)
+        .setLabel(
+          applyMode === "review"
+            ? "🧪 Test Application"
+            : "✅ Send Application",
+        )
+        .setStyle(
+          applyMode === "review" ? ButtonStyle.Primary : ButtonStyle.Success,
+        ),
+    );
+  }
+
+  row.addComponents(
     new ButtonBuilder()
-      .setCustomId(`send:${listingId}`)
-      .setLabel("✅ Send Application")
-      .setStyle(ButtonStyle.Success),
-    new ButtonBuilder()
-      .setCustomId(`retry_formal:${listingId}`)
-      .setLabel("🔄 Retry: Too Formal")
+      .setCustomId(`formal:${listingId}`)
+      .setLabel("🔄 Formal template")
       .setStyle(ButtonStyle.Secondary),
     new ButtonBuilder()
-      .setCustomId(`retry_casual:${listingId}`)
-      .setLabel("🔄 Retry: Too Casual")
+      .setCustomId(`casual:${listingId}`)
+      .setLabel("🔄 Casual template")
       .setStyle(ButtonStyle.Secondary),
     new ButtonBuilder()
       .setCustomId(`reject:${listingId}`)
       .setLabel("❌ Reject/Skip")
       .setStyle(ButtonStyle.Danger),
   );
+
+  return row;
 }
 
 /**
- * Post a drafted listing to the configured Discord channel. In manual mode the
- * Send button is omitted — the user copies the draft manually.
+ * Post a drafted listing to the configured Discord channel. When applying is
+ * off, only the draft + template buttons are shown; otherwise a Send/Test
+ * button is included.
  */
 export async function postDraftedListing(id: string) {
   if (!client || !CHANNEL_ID) return;
@@ -108,12 +123,20 @@ export async function postDraftedListing(id: string) {
       embed.setDescription(listing.description.slice(0, 500));
     }
 
+    if (listing.distance_minutes != null) {
+      embed.addFields({
+        name: "Distance",
+        value: `${listing.distance_minutes} min ${listing.distance_mode === "walking" ? "walking" : "cycling"}`,
+        inline: true,
+      });
+    }
+
     embed.addFields({
       name: "✉️ Draft",
       value: listing.draft_body.slice(0, 1024),
     });
 
-    const components = EXECUTION_MODE === "auto" ? [buildButtons(id)] : [];
+    const components = [await buildButtons(id)];
     await textChannel.send({ embeds: [embed], components });
   } catch (err) {
     console.error("❌ Failed to post Discord embed:", err);
@@ -146,6 +169,16 @@ async function handleInteraction(interaction: any) {
   try {
     switch (action) {
       case "send": {
+        const applyMode = (await getSetting("apply_mode")) || "off";
+        if (applyMode === "off") {
+          await interaction.followUp({
+            content:
+              "Sending is off. Copy the draft and apply manually, or change Apply mode in the dashboard.",
+            ephemeral: true,
+          });
+          return;
+        }
+
         const listing = await getListingById(id);
         if (!listing) {
           await interaction.followUp({
@@ -154,10 +187,12 @@ async function handleInteraction(interaction: any) {
           });
           return;
         }
-        const result = await submitApplication(listing, { dryRun: DRY_RUN });
+
+        const dryRun = applyMode === "review";
+        const result = await submitApplication(listing, { dryRun });
         if (result.screenshotPath) {
           await interaction.followUp({
-            content: "🧪 **DRY-RUN** — form filled but NOT submitted:",
+            content: "🧪 **TEST MODE** — form filled but NOT submitted:",
             files: [result.screenshotPath],
           });
         } else if (result.success) {
@@ -172,8 +207,8 @@ async function handleInteraction(interaction: any) {
         }
         break;
       }
-      case "retry_formal":
-      case "retry_casual": {
+      case "formal":
+      case "casual": {
         const listing = await getListingById(id);
         if (!listing) {
           await interaction.followUp({
@@ -182,12 +217,22 @@ async function handleInteraction(interaction: any) {
           });
           return;
         }
-        const profile = await getAllSettings();
-        const vibe = action === "retry_formal" ? "formal" : "casual";
-        const draft = await hermesDraft(listing, vibe, profile);
-        await setListingDraft(id, draft.body, draft.language);
+        const settings = await getAllSettings();
+        const template =
+          action === "formal"
+            ? settings.template_landlord
+            : settings.template_cooptation;
+        const body = renderListingDraft(
+          {
+            listing,
+            userName: settings.user_name || "",
+            userEmail: settings.user_email || "",
+          },
+          template,
+        );
+        await setListingDraft(id, body, draftLanguage(listing));
         await interaction.followUp({
-          content: `🔄 New ${vibe} draft:\n\`\`\`${draft.body}\`\`\``,
+          content: `🔄 New draft:\n\`\`\`${body}\`\`\``,
         });
         break;
       }

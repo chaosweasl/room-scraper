@@ -32,6 +32,7 @@ yarn-error.log*
 
 # env files (can opt-in for committing if needed)
 .env*
+!.env.example
 
 # vercel
 .vercel
@@ -46,18 +47,11 @@ data/
 *.db-journal
 error-screenshot.png
 
-# Email Drafts (generated output)
-email-drafts/
-
-# Python
-__pycache__/
-*.pyc
-
 # Kamernet session (sensitive — contains login cookies)
 kamernet-session.json
 
+# my own notes
+docs/dev/*
+
 # OS Files
 Thumbs.db
-
-# Developer Documents
-/docs
